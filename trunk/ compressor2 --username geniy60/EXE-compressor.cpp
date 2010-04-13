@@ -13,6 +13,7 @@ WORD NumberOfSections;
 WORD import_table_size=0x60;//размер таблицы импорта, помещаемой в начале 
 DWORD lsize,hsize;//младшее и старшее двойнные слова размера файла(в байтах).
 DWORD image_base;
+DWORD oep;//адрес точки входа
 
 DWORD rLoadLibrary = 0;
 DWORD rGetProcAddress = 0;
@@ -24,7 +25,7 @@ const char *Get_Proc_Address = "GetProcAddress";
 void create_exe();//функция создания нового exe-файла
 void changes_of_sections(PIMAGE_NT_HEADERS pNTh);//работа с секциями
 void copy_section(DWORD psource,DWORD preceiver,DWORD size);//копирование секции
-void pack_section();//сжимание секции
+void pack_section(DWORD psource,DWORD preceiver,DWORD size);//сжимание секции
 void loader();//загрузчик
 void create_new_import_table(LPVOID base,DWORD row_data,DWORD virt_addr);//создаем таблицу импорта
 PIMAGE_SECTION_HEADER rva_to_section(PIMAGE_FILE_HEADER pFh, DWORD RVA);//возвращает описание секции
@@ -109,69 +110,10 @@ void create_exe()
 	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->FileHeader.Characteristics));
 	//Далее переносим все поля опционального заголовка неизменными
 	//Возможно, в дальнейшем некоторые из них будут модифицироваться
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.Magic),sizeof(pNTh->OptionalHeader.Magic));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.Magic));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MajorLinkerVersion),sizeof(pNTh->OptionalHeader.MajorLinkerVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MajorLinkerVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MinorLinkerVersion),sizeof(pNTh->OptionalHeader.MinorLinkerVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MinorLinkerVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfCode),sizeof(pNTh->OptionalHeader.SizeOfCode));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfCode));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfInitializedData),sizeof(pNTh->OptionalHeader.SizeOfInitializedData));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfInitializedData));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfUninitializedData),sizeof(pNTh->OptionalHeader.SizeOfUninitializedData));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfUninitializedData));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.AddressOfEntryPoint),sizeof(pNTh->OptionalHeader.AddressOfEntryPoint));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.AddressOfEntryPoint));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.BaseOfCode),sizeof(pNTh->OptionalHeader.BaseOfCode));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.BaseOfCode));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.BaseOfData),sizeof(pNTh->OptionalHeader.BaseOfData));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.BaseOfData));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.ImageBase),sizeof(pNTh->OptionalHeader.ImageBase));
+	MoveMemory(pBuf_new,&(pNTh->OptionalHeader),0xE0);
 	image_base=pNTh->OptionalHeader.ImageBase;//базовый адрес
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.ImageBase));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SectionAlignment),sizeof(pNTh->OptionalHeader.SectionAlignment));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SectionAlignment));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.FileAlignment),sizeof(pNTh->OptionalHeader.FileAlignment));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.FileAlignment));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MajorOperatingSystemVersion),sizeof(pNTh->OptionalHeader.MajorOperatingSystemVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MajorOperatingSystemVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MinorOperatingSystemVersion),sizeof(pNTh->OptionalHeader.MinorOperatingSystemVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MinorOperatingSystemVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MajorImageVersion),sizeof(pNTh->OptionalHeader.MajorImageVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MajorImageVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MinorImageVersion),sizeof(pNTh->OptionalHeader.MinorImageVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MinorImageVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MajorSubsystemVersion),sizeof(pNTh->OptionalHeader.MajorSubsystemVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MajorSubsystemVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.MinorSubsystemVersion),sizeof(pNTh->OptionalHeader.MinorSubsystemVersion));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.MinorSubsystemVersion));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.Win32VersionValue),sizeof(pNTh->OptionalHeader.Win32VersionValue));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.Win32VersionValue));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfImage),sizeof(pNTh->OptionalHeader.SizeOfImage));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfImage));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfHeaders),sizeof(pNTh->OptionalHeader.SizeOfHeaders));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfHeaders));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.CheckSum),sizeof(pNTh->OptionalHeader.CheckSum));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.CheckSum));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.Subsystem),sizeof(pNTh->OptionalHeader.Subsystem));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.Subsystem));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.DllCharacteristics),sizeof(pNTh->OptionalHeader.DllCharacteristics));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.DllCharacteristics));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfStackReserve),sizeof(pNTh->OptionalHeader.SizeOfStackReserve));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfStackReserve));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfStackCommit),sizeof(pNTh->OptionalHeader.SizeOfStackCommit));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfStackCommit));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfHeapReserve),sizeof(pNTh->OptionalHeader.SizeOfHeapReserve));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfHeapReserve));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.SizeOfHeapCommit),sizeof(pNTh->OptionalHeader.SizeOfHeapCommit));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.SizeOfHeapCommit));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.LoaderFlags),sizeof(pNTh->OptionalHeader.LoaderFlags));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.LoaderFlags));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.NumberOfRvaAndSizes),sizeof(pNTh->OptionalHeader.NumberOfRvaAndSizes));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.NumberOfRvaAndSizes));
-	MoveMemory(pBuf_new,&(pNTh->OptionalHeader.DataDirectory),sizeof(pNTh->OptionalHeader.DataDirectory));
-	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->OptionalHeader.DataDirectory));
+	oep=pNTh->OptionalHeader.AddressOfEntryPoint;//базовая точка входа
+	pBuf_new=(LPVOID)((int)pBuf_new+0xE0);
 	//С PE-заголовком пока все
 	//Переходим к обработке секций
 	changes_of_sections(pNTh);
@@ -312,7 +254,7 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 		}
 		if(flag==1)
 		{
-			//pack_section();//сжимаем секцию
+			//pack_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);//сжимаем секцию
 			copy_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);
 		}
 		pBuf_exe=(LPVOID)((int)pBuf_exe+sizeof(IMAGE_SECTION_HEADER));
@@ -324,16 +266,21 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 	MoveMemory((LPVOID)((int)pBuf_new+offset),&(pRawData_new),sizeof(pRawData_new));
 	//pRowData_new+=(int)pBuf_new_start;
 	//Создаем таблицу импорта для функционирования загрузчика
-	create_new_import_table(pBuf_new_start,pRawData_new,pSecth_new->VirtualAddress);
+	//create_new_import_table(pBuf_new_start,pRawData_new,pSecth_new->VirtualAddress);
+
+	LPVOID pAddress_IT=(LPVOID)((int)pBuf_new_start+pRawData_new);
+	init_loader_variables(pUnpacker_code);
+	MoveMemory(pAddress_IT,pUnpacker_code,unpacker_code_size);
 }
 void copy_section(DWORD psource,DWORD preceiver,DWORD size)
 {
 	LPVOID s=(LPVOID)psource,r=(LPVOID)preceiver;
 	MoveMemory(r,s,size);
 }
-void pack_section()
+void pack_section(DWORD psource,DWORD preceiver,DWORD size)
 {
 	/*Заглушка*/
+	//compress(psource,preceiver,size);
 }
 void loader()
 {
@@ -366,8 +313,21 @@ Base:
 	MOV EDX,EBP            //смещение загрузки
 	ADD EDX,OFFSET r_GetProcAddress//в edx адрес поля r_GetProcAddress
 	MOV DWORD PTR [EDX],EBX//запоминаем адрес функции GetProcAddress
-
+//Возвращаемся на начальную точку входа
+	MOV EDX,EBP
+	ADD EDX,OFFSET dw_OEP
+	MOV EAX,DWORD PTR [EDX]
+	MOV EDX,EBP
+	ADD EDX,OFFSET dw_Image_Base
+	ADD EAX,DWORD PTR [EDX]
+	JMP EAX
+//Данные для распаковки
 dw_Image_Base:	
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+dw_OEP:
 	INT 3
 	INT 3
 	INT 3
@@ -500,10 +460,13 @@ void init_loader_variables(char* pUnpack_code)
 	dw_raw = dw_raw - 1;//пропускаем RET
 	//r_Get_Proc_Address  DD 0
 	dw_raw = dw_raw - 4;
-	CopyMemory(pUnpack_code+dw_raw,&rGetProcAddress,4);
+	MoveMemory(pUnpack_code+dw_raw,&rGetProcAddress,4);
 	//r_Load_Library  DD 0
 	dw_raw = dw_raw - 4;
-	CopyMemory(pUnpack_code+dw_raw,&rLoadLibrary,4);
+	MoveMemory(pUnpack_code+dw_raw,&rLoadLibrary,4);
+	//dw_OEP DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&oep,4);
 	//dw_Image_Base	 DD 0
 	dw_raw = dw_raw - 4;
 	MoveMemory(pUnpack_code+dw_raw,&image_base,4);
