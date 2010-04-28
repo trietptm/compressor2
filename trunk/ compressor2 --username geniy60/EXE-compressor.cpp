@@ -3,9 +3,13 @@
 #include "Windows.h"
 #include "Dbghelp.h"
 #include "conio.h"
+#include "aplib.h"
+#pragma comment(lib,"aplib.lib")
 //Глобальные переменные
-HANDLE hEXE,hNew_exe;
+HANDLE hEXE,hNew_exe,hTime;
 HANDLE hEXEmap,hNEWmap;
+PIMAGE_NT_HEADERS pNTh_n;
+LONG dos_e_lfanew;
 char *pUnpacker_code;
 DWORD unpacker_code_size;
 LPVOID pBuf_exe,pBuf_exe_start,pBuf_new,pBuf_new_start;
@@ -14,6 +18,8 @@ WORD import_table_size=0x60;//размер таблицы импорта, пом
 DWORD lsize,hsize;//младшее и старшее двойнные слова размера файла(в байтах).
 DWORD image_base;
 DWORD oep;//адрес точки входа
+DWORD oep_import;
+DWORD new_size;
 
 DWORD rLoadLibrary = 0;
 DWORD rGetProcAddress = 0;
@@ -21,11 +27,22 @@ DWORD rGetProcAddress = 0;
 const char *Kernel = "Kernel32.dll";
 const char *Load_Library = "LoadLibraryA";
 const char *Get_Proc_Address = "GetProcAddress";
+
+const char	*szKernel32		= "Kernel32.dll";
+DWORD		dwKernelBase		= 0;
+const char	*szGetModuleHandle	= "GetModuleHandleA";
+DWORD		rGetModuleHandle	= 0;
+const char	*szVirtualAlloc		= "VirtualAlloc";
+DWORD		rVirtualAlloc		= 0;
+const char	*szVirtualFree		= "VirtualFree";
+DWORD		rVirtualFree		= 0;
+const char	*szExitProcess		= "ExitProcess";
+DWORD		rExitProcess		= 0;
 //Функции
 void create_exe();//функция создания нового exe-файла
 void changes_of_sections(PIMAGE_NT_HEADERS pNTh);//работа с секциями
 void copy_section(DWORD psource,DWORD preceiver,DWORD size);//копирование секции
-void pack_section(DWORD psource,DWORD preceiver,DWORD size);//сжимание секции
+DWORD pack_section(DWORD psource,DWORD preceiver,DWORD size);//сжимание секции
 void loader();//загрузчик
 void create_new_import_table(LPVOID base,DWORD row_data,DWORD virt_addr);//создаем таблицу импорта
 PIMAGE_SECTION_HEADER rva_to_section(PIMAGE_FILE_HEADER pFh, DWORD RVA);//возвращает описание секции
@@ -45,7 +62,6 @@ int _tmain(int argc, _TCHAR* argv[])
 		_getch();
 		return 0;
 	}
-	HANDLE hTime;
 	hEXE=CreateFile(name_exe,GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
 		0,OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,0);
 	if(hEXE==INVALID_HANDLE_VALUE)
@@ -76,6 +92,9 @@ int _tmain(int argc, _TCHAR* argv[])
 	CloseHandle(hEXEmap);
 	CloseHandle(hEXE);
 	CloseHandle(hNEWmap);
+	//Устанавливаем новый размер файле
+	SetFilePointer(hNew_exe,new_size,NULL,FILE_BEGIN);
+	SetEndOfFile(hTime);//размер файла увеличивается до указанной величины
 	CloseHandle(hNew_exe);
 	return 0;
 }
@@ -93,6 +112,7 @@ void create_exe()
 	//перемещаем указатель на начало PE-заголовка в обоих файлах (pDosh->e_lfanew - адрес начала PE-заголовок)
 	pBuf_exe=(LPVOID)((int)pBuf_exe+pDosh->e_lfanew	);
 	pBuf_new=(LPVOID)((int)pBuf_new+pDosh->e_lfanew	);
+	dos_e_lfanew=pDosh->e_lfanew;
 	pNTh=(PIMAGE_NT_HEADERS)pBuf_exe;	//считываем PE-заголовок
 	MoveMemory(pBuf_new,&(pNTh->Signature),sizeof(pNTh->Signature));//записываем сигнатуру
 	pBuf_new=(LPVOID)((int)pBuf_new+sizeof(pNTh->Signature));//смещаемся в новом файле
@@ -125,18 +145,25 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 	DWORD rva_reloc_section=0;//RVA секции релоков
 	DWORD rva_rsrc_section=0;//RVA секции ресурсов
 	DWORD size_of_image=0;//новое значение размера образа
+	DWORD new_size_sect;
 	DWORD old_hd_size;//старый размер заголовков
-	DWORD align_VS;//выравненный виртуальный размер страницы
+	DWORD align_VS,align_RS;//выравненный виртуальный размер страницы
 	int offset;//смещение в структуре IMAGE_SECTION_HEADER
 	DWORD pRawData_exe,pRawData_new;//физ. смещения секций
 	BYTE flag=1;//разрешение упаковки(0-нет,1-да)
 	char name[5]={'.','c','o','m','p'};//имя новой секции
 	DWORD EntryPoint;
+	DWORD ImportVA;
 	DWORD buf;
+	DWORD wbuf;
 	LPVOID pBuf_new_FS=pBuf_new;//сохраним адрес первой секции в новом файле
 	LPVOID pBuf_exe_FS;//адрес первой секции в исходном
 	int i;
 	PIMAGE_SECTION_HEADER pSecth,pSecth_new;
+	//Получаем RVA таблицы импорта
+	pSecth=rva_to_section(&(pNTh->FileHeader),pNTh->OptionalHeader.DataDirectory[1].VirtualAddress);
+	if(pSecth!=NULL)
+		oep_import=pSecth->VirtualAddress;
 	//Получаем RVA секции ресурсов
 	pSecth=rva_to_section(&(pNTh->FileHeader),pNTh->OptionalHeader.DataDirectory[2].VirtualAddress);
 	if(pSecth!=NULL)
@@ -202,7 +229,8 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 	offset=offset-sizeof(pSecth->SizeOfRawData)-sizeof(pSecth->VirtualAddress);
 	//Аналогично вычисляем виртуальный адрес новой секции
 	buf=pSecth->VirtualAddress+pSecth->Misc.VirtualSize;
-	EntryPoint=buf;
+	ImportVA=buf;
+	EntryPoint=buf+import_table_size;
 	MoveMemory((LPVOID)((int)pBuf_new+offset),&(buf),sizeof(buf));
 	//Устанавливаем атрибуты чтения и записи секции
 	buf=IMAGE_SCN_MEM_READ+IMAGE_SCN_MEM_WRITE;
@@ -254,8 +282,17 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 		}
 		if(flag==1)
 		{
-			//pack_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);//сжимаем секцию
-			copy_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);
+			//copy_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);
+			new_size_sect=pack_section(pRawData_exe,pRawData_new,pSecth->SizeOfRawData);//сжимаем секцию
+			if(new_size_sect==APLIB_ERROR)
+				printf("Pack error!");
+			align_RS=align(new_size_sect,0x1000);
+			MoveMemory((LPVOID)((int)pBuf_new+offset-sizeof(pSecth->SizeOfRawData)),&(align_RS),sizeof(align_RS));
+			buf=pSecth->SizeOfRawData-align_RS;
+			align_RS=align(buf,0x1000);
+			delta=delta-align_RS;
+			wbuf=0xff;//флаг упаковки
+			MoveMemory((LPVOID)((int)pBuf_new+offset+14),&(wbuf),sizeof(wbuf));
 		}
 		pBuf_exe=(LPVOID)((int)pBuf_exe+sizeof(IMAGE_SECTION_HEADER));
 		pBuf_new=(LPVOID)((int)pBuf_new+sizeof(IMAGE_SECTION_HEADER));
@@ -264,11 +301,19 @@ void changes_of_sections(PIMAGE_NT_HEADERS pNTh)
 	pSecth_new=(PIMAGE_SECTION_HEADER)pBuf_new;
 	pRawData_new=pSecth_new->PointerToRawData+delta;
 	MoveMemory((LPVOID)((int)pBuf_new+offset),&(pRawData_new),sizeof(pRawData_new));
-	//pRowData_new+=(int)pBuf_new_start;
+	new_size=pRawData_new+pSecth_new->SizeOfRawData;//новый(сжатый)размер файла
+	//pRawData_new+=(int)pBuf_new_start;
 	//Создаем таблицу импорта для функционирования загрузчика
-	//create_new_import_table(pBuf_new_start,pRawData_new,pSecth_new->VirtualAddress);
+	create_new_import_table(pBuf_new_start,pRawData_new,pSecth_new->VirtualAddress);
 
-	LPVOID pAddress_IT=(LPVOID)((int)pBuf_new_start+pRawData_new);
+	pBuf_new=(LPVOID)((int)pBuf_new_start+dos_e_lfanew);
+	pNTh_n=(PIMAGE_NT_HEADERS)pBuf_new;
+	pNTh_n->OptionalHeader.DataDirectory[1].VirtualAddress=ImportVA;
+	pNTh_n->OptionalHeader.DataDirectory[1].Size=import_table_size;
+	MoveMemory((LPVOID)((int)pBuf_new),pNTh_n,sizeof(_IMAGE_NT_HEADERS));
+	//pSecth_new=rva_to_section(&(pNTh_n->FileHeader),pNTh_n->OptionalHeader.DataDirectory[1].VirtualAddress);
+	
+	LPVOID pAddress_IT=(LPVOID)((int)pBuf_new_start+(int)pRawData_new+import_table_size);
 	init_loader_variables(pUnpacker_code);
 	MoveMemory(pAddress_IT,pUnpacker_code,unpacker_code_size);
 }
@@ -277,22 +322,34 @@ void copy_section(DWORD psource,DWORD preceiver,DWORD size)
 	LPVOID s=(LPVOID)psource,r=(LPVOID)preceiver;
 	MoveMemory(r,s,size);
 }
-void pack_section(DWORD psource,DWORD preceiver,DWORD size)
+DWORD pack_section(DWORD psource,DWORD preceiver,DWORD size)
 {
-	/*Заглушка*/
-	//compress(psource,preceiver,size);
+	size_t s;
+	LPVOID buf;
+	DWORD new_size;
+	s=aP_workmem_size(size);
+	buf=VirtualAlloc(0,s,MEM_COMMIT,PAGE_READWRITE);
+	new_size=aP_pack((const void*)psource,(LPVOID)preceiver,size,buf,0,0);
+	VirtualFree(buf,s,MEM_DECOMMIT);
+	return new_size;
 }
 void loader()
 {
-	/*Заглушка*/
 	_asm
 	{
 UnpackerCode:
 	PUSHAD
 	CALL Base
 Base:	
-	POP EBP
+	/*POP EBP
 	SUB EBP,OFFSET Base    //в EPB адресначала кода загрузчика
+	MOV EDX,EBP
+	ADD EDX,OFFSET dw_OEP
+	MOV EAX,DWORD PTR [EDX]
+	MOV EDX,EBP
+	ADD EDX,OFFSET dw_Image_Base
+	ADD EAX,DWORD PTR [EDX]
+	JMP EAX*/
 //Получаем базовые API адреса
 	MOV EDX,EBP            //смещение загрузки
 	ADD EDX,OFFSET dw_Image_Base//переходим на метку dw_Image_Base
@@ -306,22 +363,439 @@ Base:
 	ADD EAX,DWORD PTR [EDX]//смещаемся по этому указателю
 	MOV EBX,DWORD PTR [EAX]//считываем адреса функции!
 	MOV EDX,EBP            //смещение загрузки
-	ADD EDX,OFFSET r_Load_Library//в edx адрес поля r_Load_Library
+	ADD EDX,OFFSET r_LoadLibrary//в edx адрес поля r_Load_Library
 	MOV [EDX],EBX	       //запоминаем адрес функции LoadLibraryA
 	ADD EAX,04h            //переходим к следующей функции
 	MOV EBX,DWORD PTR [EAX]//считываем адреса функции!
 	MOV EDX,EBP            //смещение загрузки
 	ADD EDX,OFFSET r_GetProcAddress//в edx адрес поля r_GetProcAddress
 	MOV DWORD PTR [EDX],EBX//запоминаем адрес функции GetProcAddress
-//Возвращаемся на начальную точку входа
+//Получаем остальные адреса
+	//Kernel
 	MOV EDX,EBP
+	ADD EDX,OFFSET r_szKernel32
+	LEA EAX,[EDX]
+	PUSH EAX
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_LoadLibrary
+	CALL [EDX]
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_KernelBase
+	MOV ESI,EAX	//kernel
+	MOV DWORD PTR [EDX], EAX
+	//KernelBase=LoadLibrary(szKernel32);
+
+	//GetModuleHandle
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_szGetModuleHandle
+	LEA EAX,[EDX]
+	CALL DoGetProcAddr
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_GetModuleHandle
+	MOV [EDX],EAX
+
+	//VirtualAlloc
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_szVirtualAlloc
+	LEA EAX,[EDX]
+	CALL DoGetProcAddr
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_VirtualAlloc
+	MOV [EDX],EAX
+
+	//VirtualFree
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_szVirtualFree
+	LEA EAX,[EDX]
+	CALL DoGetProcAddr
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_VirtualFree
+	MOV [EDX],EAX
+
+	//ExitProcess
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_szExitProcess
+	LEA EAX,[EDX]
+	CALL DoGetProcAddr
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_ExitProcess
+	MOV [EDX],EAX
+    
+	JMP start
+//Получаем адрес функции
+DoGetProcAddr:
+	PUSH EAX
+	PUSH ESI
+	MOV EDX,EBP
+	ADD EDX,OFFSET r_GetProcAddress
+	CALL [EDX]
+	//GetProcAddress(HMODULE hModule,LPCSTR lpProcName);
+	RETN
+start:
+	MOV EDX,EBP            //смещение загрузки
+	ADD EDX,OFFSET dw_Image_Base//переходим на метку dw_Image_Base
+	MOV EAX,DWORD PTR [EDX]//получаем значение Image_Base
+	ADD EAX,[EAX+03Ch]     //смещаемся на адрес PE-заголовка
+	ADD EAX,0F8h            //на адрес первой секции
+	MOV EDI,EAX
+	//в esi кол-во секций
+	MOV ESI,5
+	DEC ESI
+	PUSH EBP
+	POP EBX
+
+	PUSH 0 
+	ADD EBX,OFFSET r_GetModuleHandle
+	CALL [EBX]
+	SUB EBX,OFFSET r_GetModuleHandle 
+	MOV EBP,EAX 
+//Распаковка секций
+unpack_section:
+	MOV EAX,[EDI+10h]//считываем поле секции SizeOfRawData
+	OR EAX,EAX
+	JE end_unpack_sect
+	MOVZX EAX,[EDI+22h]//считываем поле секции NumberOfLinenumbers - флаг упаковки
+	OR EAX,EAX
+	JE end_unpack_sect
+
+	PUSH PAGE_READWRITE 
+	PUSH MEM_COMMIT 
+	PUSH [EDI+10h] 
+	PUSH 0 
+	ADD EBX,OFFSET r_VirtualAlloc
+	CALL [EBX]
+	SUB EBX,OFFSET r_VirtualAlloc
+
+	PUSH EAX 
+	MOV EDX,EAX 
+	MOV EAX,EBP 
+	ADD EAX,[EDI+0Ch] 
+	MOV ECX,[EDI+10h] 
+	CALL move_mem
+	
+	MOV EAX,[ESP] 
+	MOV EDX,EBP 
+	ADD EDX,[EDI+0Ch] 
+	CALL aP_depack
+
+	POP EAX 
+	PUSH MEM_DECOMMIT 
+	PUSH [EDI+10h] 
+	PUSH EAX
+	ADD EBX,OFFSET r_VirtualFree
+	CALL [EBX]
+	SUB EBX,OFFSET r_VirtualFree
+end_unpack_sect: 
+	ADD EDI,28h
+	DEC ESI 
+	JNE unpack_section
+
+	ADD EBX,OFFSET dw_OEP_Import
+	MOV ESI,DWORD PTR [EBX]
+	SUB EBX,OFFSET dw_OEP_Import
+	ADD ESI,EBP 
+
+next_import_entry: 
+	MOV ECX,[ESI+12] //поле Name
+	OR ECX,ECX 
+	JE done          //конец таблицы?
+	ADD ECX,EBP 
+	MOV EDI,ECX 
+	PUSH EDI 
+	//Получим хэндл модуля
+	ADD EBX,OFFSET r_GetModuleHandle
+	CALL [EBX]
+	SUB EBX,OFFSET r_GetModuleHandle
+	OR EAX,EAX 
+	JNE next1 
+ 	PUSH EDI 
+	//Если модуль не загружен еще - загрузим!
+	ADD EBX,OFFSET r_LoadLibrary
+	CALL [EBX]
+	SUB EBX,OFFSET r_LoadLibrary 
+next1: 
+	OR EAX,EAX 
+	JNE next2 
+	PUSH 126 //Завершение с ошибкой
+	ADD EBX,OFFSET r_ExitProcess
+	CALL [EBX]
+	SUB EBX,OFFSET r_ExitProcess
+next2: 
+	MOV EDI,EAX 
+	MOV ECX,[ESI]//поле OriginalFirstThunk
+	OR ECX,ECX 
+	JNE next3 
+	MOV ECX,[ESI+16]//поле FirstThunk
+next3: 
+	JECXZ next4 
+	ADD ECX,EBP 
+	MOV EDX,[ESI+16] 
+	ADD EDX,EBP 
+process_iat: 
+	MOV EAX,[ECX] 
+	OR EAX,EAX 
+	JE next4 
+	TEST EAX,80000000h 
+	JE by_name 
+	AND EAX,0000FFFFh 
+	JMP iat_common 
+by_name: 
+	ADD EAX,EBP 
+	ADD EAX,2 
+iat_common: 
+	PUSH ECX 
+	PUSH EDX 
+	PUSH EAX 
+	PUSH EDI 
+	ADD EBX,OFFSET r_GetProcAddress
+	CALL [EBX]
+	SUB EBX,OFFSET r_GetProcAddress 
+	POP EDX 
+	POP	ECX 
+	MOV [EDX],EAX 
+	ADD ECX,4 
+	ADD EDX,4 
+	JMP process_iat 
+next4: 
+	ADD ESI,20
+	JMP next_import_entry 
+done: 
+	popad 
+//Возвращаемся на начальную точку входа
+	MOV EDX,EBX
 	ADD EDX,OFFSET dw_OEP
 	MOV EAX,DWORD PTR [EDX]
-	MOV EDX,EBP
+	MOV EDX,EBX
 	ADD EDX,OFFSET dw_Image_Base
 	ADD EAX,DWORD PTR [EDX]
 	JMP EAX
+
+move_mem: 
+	PUSH ESI 
+	PUSH EDI 
+	MOV ESI,EAX 
+	MOV EDI,EDX 
+	MOV EAX,ECX 
+	CMP EDI,ESI 
+	JA down 
+	JE mexit 
+	SAR ECX,2 
+	JS mexit 
+	REP MOVSD 
+	MOV ECX,EAX 
+	AND ECX,3 
+	REP MOVSB 
+	JMP mexit 
+down: 
+	LEA ESI,[ESI+ECX-4] 
+	LEA EDI,[EDI+ECX-4] 
+	SAR ECX,2 
+	JS mexit 
+	STD 
+	REP MOVSD 
+	MOV ECX,EAX 
+	AND ECX,3 
+	ADD ESI,3 
+	ADD EDI,3 
+	REP MOVSB 
+	CLD 
+mexit: 
+	POP EDI 
+	POP ESI 
+	RET 
+
+aP_depack:
+    //; aP_depack_asm(const void *source, void *destination)
+
+    pushad
+
+    mov    esi, eax
+    mov    edi, edx
+
+    cld
+    mov    dl, 80h
+    xor    ebx,ebx
+litera:
+    movsb
+    mov    bl, 2
+nexttag:
+    call   getbit
+    jnc    litera
+    xor    ecx, ecx
+    call   getbit
+    jnc    codepair
+    xor    eax, eax
+    call   getbit
+    jnc    shortmatch
+    mov    bl, 2
+    inc    ecx
+    mov    al, 10h
+getmorebits:
+    call   getbit
+    adc    al, al
+    jnc    getmorebits
+    jnz    domatch
+    stosb
+    jmp    nexttag
+codepair:
+    call   getgamma_no_ecx
+    sub    ecx, ebx
+    jnz    normalcodepair
+    call   getgamma
+    jmp    domatch_lastpos
+shortmatch:
+    lodsb
+    shr    eax, 1
+    jz     donedepacking
+    adc    ecx, ecx
+    jmp    domatch_with_2inc
+normalcodepair:
+    xchg   eax, ecx
+    dec    eax
+    shl    eax, 8
+    lodsb
+    call   getgamma
+    cmp    eax, 32000
+    jae    domatch_with_2inc
+    cmp    ah, 5
+    jae    domatch_with_inc
+    cmp    eax, 7fh
+    ja     domatch_new_lastpos
+domatch_with_2inc:
+    inc    ecx
+domatch_with_inc:
+    inc    ecx
+domatch_new_lastpos:
+    xchg   eax, ebp
+domatch_lastpos:
+    mov    eax, ebp
+    mov    bl, 1
+domatch:
+    push   esi
+    mov    esi, edi
+    sub    esi, eax
+    rep    movsb
+    pop    esi
+    jmp    nexttag
+getbit:
+    add    dl, dl
+    jnz    stillbitsleft
+    mov    dl, [esi]
+    inc    esi
+    adc    dl, dl
+stillbitsleft:
+    ret
+getgamma:
+    xor    ecx, ecx
+getgamma_no_ecx:
+    inc    ecx
+getgammaloop:
+    call   getbit
+    adc    ecx, ecx
+    call   getbit
+    jc     getgammaloop
+    ret
+donedepacking:
+    popad
+    ret
 //Данные для распаковки
+r_szKernel32:			//db "Kernel32.dll",0,13
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_KernelBase:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_szGetModuleHandle:    //db "GetModuleHandleA",0,17
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_GetModuleHandle:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_szVirtualAlloc:     //db "VirtualAlloc",0,13
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_VirtualAlloc:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_szVirtualFree:    //db "VirtualFree",0,12
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_VirtualFree:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_szExitProcess:    //db "ExitProcess",0,12
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_ExitProcess:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
 dw_Image_Base:	
 	INT 3
 	INT 3
@@ -332,7 +806,12 @@ dw_OEP:
 	INT 3
 	INT 3
 	INT 3
-r_Load_Library:
+dw_OEP_Import:
+	INT 3
+	INT 3
+	INT 3
+	INT 3
+r_LoadLibrary:
 	INT 3
 	INT 3
 	INT 3
@@ -343,7 +822,7 @@ r_GetProcAddress:
 	INT 3
 	INT 3
 UnpackerCodeEND:
-    RET
+	RET
 //"UNPACKEND" - ключевое слово
 	PUSH EBP //'U'       
 	DEC ESI  //'N'
@@ -408,12 +887,12 @@ DWORD get_func_size(void* func_name)
 }
 char* copy_func(void* func_name)
 {
-    DWORD dw_RVA=get_func_rva(func_name);//получаем RVA
-    DWORD dw_Size=get_func_size(func_name);//получаем размер
-    char* pfunc_body=PCHAR(dw_RVA);//указатель на тело функции
-    char* file_buff=new char[dw_Size];//буффер для кода
-    MoveMemory(file_buff,pfunc_body,dw_Size);//копируем тело функции
-    return(file_buff);
+	DWORD dw_RVA=get_func_rva(func_name);//получаем RVA
+	DWORD dw_Size=get_func_size(func_name);//получаем размер
+	char* pfunc_body=PCHAR(dw_RVA);//указатель на тело функции
+	char* file_buff=new char[dw_Size];//буффер для кода
+	MoveMemory(file_buff,pfunc_body,dw_Size);//копируем тело функции
+	return(file_buff);
 }
 void create_new_import_table(LPVOID base,DWORD raw_data,DWORD virt_addr)
 {
@@ -457,6 +936,7 @@ void create_new_import_table(LPVOID base,DWORD raw_data,DWORD virt_addr)
 void init_loader_variables(char* pUnpack_code)
 {
 	DWORD dw_raw=unpacker_code_size;
+	DWORD l;
 	dw_raw = dw_raw - 1;//пропускаем RET
 	//r_Get_Proc_Address  DD 0
 	dw_raw = dw_raw - 4;
@@ -464,12 +944,51 @@ void init_loader_variables(char* pUnpack_code)
 	//r_Load_Library  DD 0
 	dw_raw = dw_raw - 4;
 	MoveMemory(pUnpack_code+dw_raw,&rLoadLibrary,4);
+	//dw_OEP_Import DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&oep_import,4);
 	//dw_OEP DD 0
 	dw_raw = dw_raw - 4;
 	MoveMemory(pUnpack_code+dw_raw,&oep,4);
 	//dw_Image_Base	 DD 0
 	dw_raw = dw_raw - 4;
 	MoveMemory(pUnpack_code+dw_raw,&image_base,4);
+
+	//r_ExitProcess  DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&rExitProcess,4);
+	//r_szExitProcess  DB "ExitProcess",0
+	l=DWORD(strlen(szExitProcess))+1;
+	dw_raw = dw_raw - l;
+	MoveMemory(pUnpack_code+dw_raw,szExitProcess,l);
+	//r_VirtualFree  DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&rVirtualFree,4);
+	//r_szVirtualFree  DB "VirtualFree",0
+	l=DWORD(strlen(szVirtualFree))+1;
+	dw_raw = dw_raw - l;
+	MoveMemory(pUnpack_code+dw_raw,szVirtualFree,l);
+	//r_VirtualAlloc  DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&rVirtualAlloc,4);
+	//r_szVirtualAlloc  DB "VirtualAlloc",0
+	l=DWORD(strlen(szVirtualAlloc))+1;
+	dw_raw = dw_raw - l;
+	MoveMemory(pUnpack_code+dw_raw,szVirtualAlloc,l);
+	//r_GetModuleHandle  DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&rGetModuleHandle,4);
+	//r_szGetModuleHandle  DB "GetModuleHandleA",0
+	l=DWORD(strlen(szGetModuleHandle))+1;
+	dw_raw = dw_raw - l;
+	MoveMemory(pUnpack_code+dw_raw,szGetModuleHandle,l);
+	//r_KernelBase  DD 0
+	dw_raw = dw_raw - 4;
+	MoveMemory(pUnpack_code+dw_raw,&dwKernelBase ,4);
+	//r_szKernel32  DB "Kernel32.dll",0
+	l=DWORD(strlen(szKernel32))+1;
+	dw_raw = dw_raw - l;
+	MoveMemory(pUnpack_code+dw_raw,szKernel32,l);
 }
 DWORD align(DWORD value,WORD align)
 {
